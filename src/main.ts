@@ -3,15 +3,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import pkg from "../package.json" assert { type: "json" };
+import { setOutput } from "@actions/core";
+import * as github from "@actions/github";
 
 import { readServerInfo } from "./readServerInfo";
-import {
-  SandboxMode,
-  OutputSchemaSource,
-  PromptSource,
-  runCodexExec,
-  SafetyStrategy,
-} from "./runCodexExec";
+import { SandboxMode, OutputSchemaSource, PromptSource, runCodexExec, SafetyStrategy } from "./runCodexExec";
 import { dropSudo } from "./dropSudo";
 import { ensureActorHasWriteAccess } from "./checkActorPermissions";
 import parseArgsStringToArgv from "string-argv";
@@ -21,10 +17,7 @@ import { checkOutput } from "./checkOutput";
 export async function main() {
   const program = new Command();
 
-  program
-    .name("codex-action")
-    .version(pkg.version)
-    .description("Multitool to support openai/codex-action.");
+  program.name("codex-action").version(pkg.version).description("Multitool to support openai/codex-action.");
 
   program
     .command("read-server-info")
@@ -36,130 +29,62 @@ export async function main() {
 
   program
     .command("resolve-codex-home")
-    .description(
-      "Resolve the Codex home directory with precedence: input, env, default (~/.codex)"
-    )
-    .requiredOption(
-      "--codex-home-override <DIRECTORY>",
-      "Optional codex-home input value (may be empty)"
-    )
-    .requiredOption(
-      "--safety-strategy <strategy>",
-      "Safety strategy to take into account when picking defaults"
-    )
-    .requiredOption(
-      "--codex-user <user>",
-      "Codex user to consider when safety strategy is 'unprivileged-user'"
-    )
+    .description("Resolve the Codex home directory with precedence: input, env, default (~/.codex)")
+    .requiredOption("--codex-home-override <DIRECTORY>", "Optional codex-home input value (may be empty)")
+    .requiredOption("--safety-strategy <strategy>", "Safety strategy to take into account when picking defaults")
+    .requiredOption("--codex-user <user>", "Codex user to consider when safety strategy is 'unprivileged-user'")
     .requiredOption("--github-run-id <id>", "GitHub run ID")
-    .action(
-      async (options: {
-        codexHomeOverride: string;
-        safetyStrategy: string;
-        codexUser: string;
-        githubRunId: string;
-      }) => {
-        const safetyStrategy = toSafetyStrategy(options.safetyStrategy);
-        const codexUser = emptyAsNull(options.codexUser);
-        const resolved = await resolveCodexHome(
-          emptyAsNull(options.codexHomeOverride),
-          safetyStrategy,
-          codexUser,
-          options.githubRunId
-        );
+    .action(async (options: { codexHomeOverride: string; safetyStrategy: string; codexUser: string; githubRunId: string }) => {
+      const safetyStrategy = toSafetyStrategy(options.safetyStrategy);
+      const codexUser = emptyAsNull(options.codexUser);
+      const resolved = await resolveCodexHome(emptyAsNull(options.codexHomeOverride), safetyStrategy, codexUser, options.githubRunId);
 
-        const { setOutput } = await import("@actions/core");
-        setOutput("codex-home", resolved);
-        console.log(`Resolved Codex home: ${resolved}`);
-      }
-    );
+      const { setOutput } = await import("@actions/core");
+      setOutput("codex-home", resolved);
+      console.log(`Resolved Codex home: ${resolved}`);
+    });
 
   program
     .command("write-proxy-config")
-    .description(
-      "Write the OpenAI Proxy model provider config into CODEX_HOME/config.toml"
-    )
+    .description("Write the OpenAI Proxy model provider config into CODEX_HOME/config.toml")
     .requiredOption("--codex-home <DIRECTORY>", "Path to Codex home directory")
     .requiredOption("--port <port>", "Proxy server port", parseIntStrict)
-    .requiredOption(
-      "--safety-strategy <strategy>",
-      "Safety strategy to use. One of 'drop-sudo', 'read-only', 'unprivileged-user', or 'unsafe'."
-    )
-    .action(
-      async (options: {
-        codexHome: string;
-        port: number;
-        safetyStrategy: string;
-      }) => {
-        const safetyStrategy = toSafetyStrategy(options.safetyStrategy);
-        await writeProxyConfig(options.codexHome, options.port, safetyStrategy);
-      }
-    );
+    .requiredOption("--safety-strategy <strategy>", "Safety strategy to use. One of 'drop-sudo', 'read-only', 'unprivileged-user', or 'unsafe'.")
+    .action(async (options: { codexHome: string; port: number; safetyStrategy: string }) => {
+      const safetyStrategy = toSafetyStrategy(options.safetyStrategy);
+      await writeProxyConfig(options.codexHome, options.port, safetyStrategy);
+    });
 
   program
     .command("drop-sudo")
     .description("Drops sudo privileges for the configured user.")
     .addOption(new Option("--user <user>", "User to modify").default("runner"))
-    .addOption(
-      new Option("--group <group>", "Group granting sudo privileges").default(
-        "sudo"
-      )
-    )
+    .addOption(new Option("--group <group>", "Group granting sudo privileges").default("sudo"))
     .addOption(new Option("--root-phase", "internal").default(false).hideHelp())
-    .action(
-      async (options: { user: string; group: string; rootPhase: boolean }) => {
-        await dropSudo({
-          user: options.user,
-          group: options.group,
-          rootPhase: options.rootPhase,
-        });
-      }
-    );
+    .action(async (options: { user: string; group: string; rootPhase: boolean }) => {
+      await dropSudo({
+        user: options.user,
+        group: options.group,
+        rootPhase: options.rootPhase,
+      });
+    });
 
   program
     .command("run-codex-exec")
     .description("Invokes `codex exec` with the appropriate arguments")
     .requiredOption("--prompt <prompt>", "Prompt to pass to `codex exec`.")
-    .requiredOption(
-      "--prompt-file <FILE>",
-      "File containing the prompt to pass to `codex exec`."
-    )
-    .requiredOption(
-      "--codex-home <DIRECTORY>",
-      "Path to the Codex CLI home directory (where config files are stored)."
-    )
+    .requiredOption("--prompt-file <FILE>", "File containing the prompt to pass to `codex exec`.")
+    .requiredOption("--codex-home <DIRECTORY>", "Path to the Codex CLI home directory (where config files are stored).")
     .requiredOption("--cd <DIRECTORY>", "Working directory for Codex")
-    .requiredOption(
-      "--extra-args <args>",
-      "Additional args to pass through to `codex exec` as JSON array or shell string.",
-      parseExtraArgs
-    )
-    .requiredOption(
-      "--output-file <FILE>",
-      "Path where the final message from `codex exec` will be written."
-    )
-    .requiredOption(
-      "--output-schema-file <FILE>",
-      "Path to a schema file to pass to `codex exec --output-schema`."
-    )
-    .requiredOption(
-      "--output-schema <SCHEMA>",
-      "Inline schema contents to pass to `codex exec --output-schema`."
-    )
-    .requiredOption(
-      "--sandbox <SANDBOX>",
-      "Sandbox mode override to pass to `codex exec`."
-    )
+    .requiredOption("--extra-args <args>", "Additional args to pass through to `codex exec` as JSON array or shell string.", parseExtraArgs)
+    .requiredOption("--output-file <FILE>", "Path where the final message from `codex exec` will be written.")
+    .requiredOption("--output-schema-file <FILE>", "Path to a schema file to pass to `codex exec --output-schema`.")
+    .requiredOption("--output-schema <SCHEMA>", "Inline schema contents to pass to `codex exec --output-schema`.")
+    .requiredOption("--sandbox <SANDBOX>", "Sandbox mode override to pass to `codex exec`.")
     .requiredOption("--model <model>", "Model the agent should use")
     .requiredOption("--effort <effort>", "Reasoning effort the agent should use")
-    .requiredOption(
-      "--safety-strategy <strategy>",
-      "Safety strategy to use. One of 'drop-sudo', 'read-only', 'unprivileged-user', or 'unsafe'."
-    )
-    .requiredOption(
-      "--codex-user <user>",
-      "User to run codex exec as when using the 'unprivileged-user' safety strategy."
-    )
+    .requiredOption("--safety-strategy <strategy>", "Safety strategy to use. One of 'drop-sudo', 'read-only', 'unprivileged-user', or 'unsafe'.")
+    .requiredOption("--codex-user <user>", "User to run codex exec as when using the 'unprivileged-user' safety strategy.")
     .action(
       async (options: {
         prompt: string;
@@ -195,9 +120,7 @@ export async function main() {
         const normalizedPrompt = emptyAsNull(prompt);
         const normalizedPromptFile = emptyAsNull(promptFile);
         if (normalizedPrompt != null && normalizedPromptFile != null) {
-          throw new Error(
-            "Only one of `prompt` or `prompt-file` may be specified."
-          );
+          throw new Error("Only one of `prompt` or `prompt-file` may be specified.");
         }
 
         let promptSource: PromptSource;
@@ -206,9 +129,7 @@ export async function main() {
         } else if (normalizedPromptFile != null) {
           promptSource = { type: "file", path: normalizedPromptFile };
         } else {
-          throw new Error(
-            "Either `prompt` or `prompt-file` must be specified."
-          );
+          throw new Error("Either `prompt` or `prompt-file` must be specified.");
         }
 
         // Custom option processing to coerces to null does not work with
@@ -216,13 +137,8 @@ export async function main() {
         const normalizedOutputSchemaFile = emptyAsNull(outputSchemaFile);
         const normalizedOutputSchema = emptyAsNull(outputSchema);
 
-        if (
-          normalizedOutputSchemaFile != null &&
-          normalizedOutputSchema != null
-        ) {
-          throw new Error(
-            "Only one of `output-schema` or `output-schema-file` may be specified."
-          );
+        if (normalizedOutputSchemaFile != null && normalizedOutputSchema != null) {
+          throw new Error("Only one of `output-schema` or `output-schema-file` may be specified.");
         }
 
         let outputSchemaSource: OutputSchemaSource | null = null;
@@ -256,47 +172,85 @@ export async function main() {
 
   program
     .command("check-write-access")
-    .description(
-      "Checks that the triggering actor has write access to the repository"
-    )
-    .option(
-      "--allow-bots <boolean>",
-      "Allow GitHub App and bot actors to bypass the write-access check (default: true).",
-      parseBoolean,
-      true
-    )
-    .option(
-      "--allow-users <users>",
-      "Comma-separated list of GitHub usernames who can run this action, or '*' to allow all users.",
-      ""
-    )
-    .action(
-      async ({
-        allowBots,
+    .description("Checks that the triggering actor has write access to the repository")
+    .option("--allow-bots <boolean>", "Allow GitHub App and bot actors to bypass the write-access check (default: true).", parseBoolean, true)
+    .option("--allow-users <users>", "Comma-separated list of GitHub usernames who can run this action, or '*' to allow all users.", "")
+    .action(async ({ allowBots, allowUsers }: { allowBots: boolean; allowUsers: string }) => {
+      const result = await ensureActorHasWriteAccess({
+        allowBotActors: allowBots,
         allowUsers,
-      }: {
-        allowBots: boolean;
-        allowUsers: string;
-      }) => {
-        const result = await ensureActorHasWriteAccess({
-          allowBotActors: allowBots,
-          allowUsers,
-        });
-        switch (result.status) {
-          case "approved": {
-            console.log(`Actor '${result.actor}' is permitted to continue.`);
-            break;
-          }
-          case "rejected": {
-            const message = `Actor '${result.actor}' is not permitted to run this action: ${result.reason}`;
-            console.error(message);
-            throw new Error(message);
-          }
+      });
+      switch (result.status) {
+        case "approved": {
+          console.log(`Actor '${result.actor}' is permitted to continue.`);
+          break;
+        }
+        case "rejected": {
+          const message = `Actor '${result.actor}' is not permitted to run this action: ${result.reason}`;
+          console.error(message);
+          throw new Error(message);
         }
       }
-    );
+    });
+
+  program
+    .command("post-thinking-comment")
+    .requiredOption("--owner <owner>")
+    .requiredOption("--repo <repo>")
+    .requiredOption("--number <number>")
+    .action(async (options: { owner: string; repo: string; number: string }) => {
+      const octokit = github.getOctokit(process.env.GITHUB_TOKEN || "");
+
+      const response = await octokit.rest.issues.createComment({
+        owner: options.owner,
+        repo: options.repo,
+        issue_number: parseInt(options.number, 10),
+        body:
+          `UbiquityOS is working… <img src="https://github.com/user-attachments/assets/5ac382c7-e004-429b-8e35-7feb3e8f9c6f" width="14px" height="14px" style="vertical-align: middle; margin-left: 4px;" />
+
+I'll analyze this and get back to you.` + getJobUrlComment(),
+      });
+      setOutput("comment-id", response.data.id);
+    });
+
+  program
+    .command("post-final-comment")
+    .requiredOption("--owner <owner>")
+    .requiredOption("--repo <repo>")
+    .requiredOption("--comment-id <commentId>")
+    .requiredOption("--comment-body <commentBody>")
+    .option("--hide-job-url <boolean>", "Whether to hide the job URL in the comment body.", parseBoolean)
+    .action(async (options: { owner: string; repo: string; commentId: string; commentBody: string; hideJobUrl?: boolean }) => {
+      const octokit = github.getOctokit(process.env.GITHUB_TOKEN || "");
+
+      await octokit.rest.issues.updateComment({
+        owner: options.owner,
+        repo: options.repo,
+        comment_id: parseInt(options.commentId, 10),
+        body: options.commentBody + getJobUrlComment(options.hideJobUrl),
+      });
+    });
 
   program.parse();
+}
+
+function getJobUrl(): string | null {
+  const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env;
+  if (GITHUB_SERVER_URL && GITHUB_REPOSITORY && GITHUB_RUN_ID) {
+    return `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`;
+  }
+  return null;
+}
+
+function getJobUrlComment(hidden?: boolean): string {
+  const url = getJobUrl();
+  if (!url) {
+    return "";
+  }
+  if (hidden) {
+    return `\n\n<!-- [View job run](${url}) -->`;
+  }
+  return `\n\n[View job run](${url})`;
 }
 
 function parseIntStrict(value: string): number {
@@ -327,9 +281,7 @@ function toSafetyStrategy(value: string): SafetyStrategy {
     case "unsafe":
       return value;
     default:
-      throw new Error(
-        `Invalid safety strategy: ${value}. Must be one of 'drop-sudo', 'read-only', 'unprivileged-user', or 'unsafe'.`
-      );
+      throw new Error(`Invalid safety strategy: ${value}. Must be one of 'drop-sudo', 'read-only', 'unprivileged-user', or 'unsafe'.`);
   }
 }
 
@@ -340,9 +292,7 @@ function toSandboxMode(value: string): SandboxMode {
     case "danger-full-access":
       return value;
     default:
-      throw new Error(
-        `Invalid sandbox: ${value}. Must be one of 'read-only', 'workspace-write', or 'danger-full-access'.`
-      );
+      throw new Error(`Invalid sandbox: ${value}. Must be one of 'read-only', 'workspace-write', or 'danger-full-access'.`);
   }
 }
 
@@ -379,15 +329,10 @@ async function resolveCodexHome(
 
   if (safetyStrategy === "unprivileged-user") {
     if (codexUser == null) {
-      throw new Error(
-        "codex-user input must be provided when using 'unprivileged-user' safety strategy and no codex-home is specified."
-      );
+      throw new Error("codex-user input must be provided when using 'unprivileged-user' safety strategy and no codex-home is specified.");
     }
 
-    return await deriveSharedCodexHomeForUnprivilegedUser(
-      codexUser,
-      githubRunId
-    );
+    return await deriveSharedCodexHomeForUnprivilegedUser(codexUser, githubRunId);
   } else {
     const codexHome = path.join(os.homedir(), ".codex");
     // Ensure directory exists for downstream steps that will write files here.
@@ -396,13 +341,8 @@ async function resolveCodexHome(
   }
 }
 
-async function deriveSharedCodexHomeForUnprivilegedUser(
-  user: string,
-  githubRunId: string
-): Promise<string> {
-  const home = (
-    await checkOutput(["sudo", "-u", user, "--", "printenv", "HOME"])
-  ).trim();
+async function deriveSharedCodexHomeForUnprivilegedUser(user: string, githubRunId: string): Promise<string> {
+  const home = (await checkOutput(["sudo", "-u", user, "--", "printenv", "HOME"])).trim();
   if (!home) {
     throw new Error(`Could not determine home directory for user '${user}'.`);
   }

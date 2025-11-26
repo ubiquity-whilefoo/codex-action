@@ -97,6 +97,12 @@ inputs:
     description: "Allow runs triggered by GitHub Apps/bot accounts to bypass the write-access check."
     required: false
     default: "false"
+  event-payload:
+    description: "JSON string of the GitHub event payload."
+    required: true
+  auth-token:
+    description: "GitHub token used for authentication when posting comments."
+    required: true
 outputs:
   final-message:
     description: "Raw output emitted by `codex exec`."
@@ -258,9 +264,38 @@ runs:
         fi
         echo "Confirmed sudo privilege is disabled."
 
+    - name: Derive target from event payload
+      id: target
+      env:
+        EVENT_PAYLOAD: ${{ inputs['event-payload'] }}
+      shell: bash
+      run: |
+        payload="$EVENT_PAYLOAD"
+
+        owner="$(jq -r '.pull_request.base.repo.owner.login // .issue.repository.owner.login' <<< "$payload")"
+        repo="$(jq -r '.pull_request.base.repo.name // .issue.repository.name' <<< "$payload")"
+        number="$(jq -r '.pull_request.number // .issue.number' <<< "$payload")"
+
+        echo "owner=$owner" >> "$GITHUB_OUTPUT"
+        echo "repo=$repo" >> "$GITHUB_OUTPUT"
+        echo "number=$number" >> "$GITHUB_OUTPUT"
+
+    - name: Post thinking comment
+      id: post_thinking_comment
+      if: ${{ inputs.prompt != '' || inputs['prompt-file'] != '' }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs['auth-token'] }}
+      run: |
+        node "${{ github.action_path }}/dist/main.js" post-thinking-comment \
+          --owner "${{ steps.target.outputs.owner }}" \
+          --repo "${{ steps.target.outputs.repo }}" \
+          --number "${{ steps.target.outputs.number }}"
+
     - name: Run codex exec
       id: run_codex
       if: ${{ inputs.prompt != '' || inputs['prompt-file'] != '' }}
+      continue-on-error: true
       env:
         CODEX_PROMPT: ${{ inputs.prompt }}
         CODEX_PROMPT_FILE: ${{ inputs['prompt-file'] }}
@@ -292,3 +327,30 @@ runs:
             --effort "$CODEX_EFFORT" \
             --safety-strategy "$CODEX_SAFETY_STRATEGY" \
             --codex-user "$CODEX_USER"
+
+    - name: Post final comment
+      if: ${{ steps.run_codex.outcome == 'success' }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs['auth-token'] }}
+        BODY: ${{ steps.run_codex.outputs['final-message'] }}
+      run: |
+        node "${{ github.action_path }}/dist/main.js" post-final-comment \
+          --owner "${{ steps.target.outputs.owner }}" \
+          --repo "${{ steps.target.outputs.repo }}" \
+          --comment-id "${{ steps.post_thinking_comment.outputs.comment-id }}" \
+          --comment-body "$BODY" \
+          --hide-job-url true
+      
+    - name: Post error comment
+      if: ${{ steps.run_codex.outcome == 'failure' }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs['auth-token'] }}
+        BODY: "Sorry, I was unable to complete this request."
+      run: |
+        node "${{ github.action_path }}/dist/main.js" post-final-comment \
+          --owner "${{ steps.target.outputs.owner }}" \
+          --repo "${{ steps.target.outputs.repo }}" \
+          --comment-id "${{ steps.post_thinking_comment.outputs.comment-id }}" \
+          --comment-body "$BODY"
